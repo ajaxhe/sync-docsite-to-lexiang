@@ -62,8 +62,8 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
   --target-folder-id <eid> --scope <scope> --dry-run
 ```
 
-- 输出：total_nodes、new_folders/new_pages/known_pages/to_trash 计数 + 菜单预览。
-- **把清单摘要给用户确认范围后，才进入第 3 步。**（用户已在更早轮次明确确认过范围与删除方式时，可直接继续，但要在回复中说明 dry-run 结果。）
+- 输出：total_nodes、new_folders/new_pages/known_pages/to_trash 计数 + 菜单预览 + **`preview_html`（前置确认页路径）**。
+- **必须用 present_files 把 `preview.html` 展示给用户**——它是静态自包含页面，按「乐享侧最终落地布局」渲染完整目录树（含 sidebar 分组、待新建/已存在标注、sidebar 隐藏页兜底提示），用户确认层级无误后才进入第 3 步。（用户已在更早轮次明确确认过范围与删除方式时，可直接继续，但要在回复中说明 dry-run 结果。）
 
 ### 第 3 步：正式同步（后台跑，页面多时可能 5-20 分钟）
 
@@ -72,12 +72,14 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
   --target-folder-id <eid> --scope <scope> --delete-mode <sync|keep>
 ```
 
-- stdout 只输出 JSON 摘要（created/updated/skipped/failed/trashed + report_path）。
+- stdout 只输出 JSON 摘要（created/updated/skipped/failed/trashed + report_path + **report_html + dashboard_url**）。
+- **同步开始时 stderr 会打印 `📊 实时看板: http://127.0.0.1:<port>/`**——同步期间用户可打开它实时查看：整体进度条、当前正在导入的文档、每个文档的状态（等待/导入中/新建成功/已更新/未变更/失败）、失败原因明细。页面每 1.5s 自动刷新，同步结束后服务自动关闭。**把该 URL 转达给用户**。
+- 同步结束后自动生成静态 `report.html`（自包含，内容与实时看板最终状态一致），可长期保存转发。
 - 同一站点并发保护：`.sync.lock`，锁存活 1 小时内拒绝二次运行。
 
 ### 第 4 步：展示报告
 
-读取 JSON 里的 `report_path`，用 present_files 展示；同步失败的页面在报告中逐条列出（URL + 原因），不静默丢弃。
+读取 JSON 里的 `report_html`（HTML 报告，优先）与 `report_path`（Markdown 报告），用 present_files 展示；同步失败的页面在报告中逐条列出（URL + 原因），不静默丢弃。
 
 ## 参数全表
 
@@ -96,6 +98,7 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
 | `--no-waf-sanitize` | off | 关闭乐享 WAF 危险模式消毒（一般别关） |
 | `--no-adopt-orphan` | off | 关闭 sidebar 隐藏但 menu JSON 存在页的兜底归组（默认开启，按 path 兄弟定位 group 末尾） |
 | `--check-deps` | off | 仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证）就退出，不要求 `--url`；可加 `--json` 出 JSON 摘要 |
+| `--no-dashboard` | off | 不生成 preview.html / 实时看板 / report.html（默认全部生成；看板文件在 `~/.config/lexiang-websync/{域名}/dashboard/`） |
 
 ## 同步机制（了解即可，脚本自动处理）
 
@@ -104,7 +107,8 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
 - **Sidebar 视觉分组**：Nextra 等部分框架把分类标题（如「通讯录/登录/企业设置」）只放在 sidebar HTML（`.sideBar_itemHeader`）里，菜单 JSON 完全没有这层。脚本自动从 sidebar HTML 解析 group 标题与顺序，在目标 section root 下补建 group folder，用 `entry_move_entry(after=...)` 按源站 sidebar 顺序重排所有一级 children + 跨 group 顺序。Sidebar 隐藏但 menu JSON 里有的页，按 path 兄弟关系（如 LoginConfig/strategy → 与 LoginConfig/username 同目录）兜底归到对应 group 末尾，`--no-adopt-orphan` 可关。
 - **媒体**：图片内嵌为 image block；视频/音频/附件下载后作为 attachment 卡片上传；媒体下载失败自动回退为绝对 URL 链接。
 - **WAF 消毒**：正文含 `os.system(`、`__import__(`、`subprocess.check_output(` 等模式会被乐享 WAF 拦 403，脚本自动插零宽空格消毒。**AD/LDAP 文档页** 的 LDAP 过滤器 `(&(objectClass=user)...)` 同样被 WAF 误判注入，脚本自动在 `(` 后插零宽空格。
-- **状态目录**：`~/.config/lexiang-websync/{域名}/`（config.json / manifest.json / reports/）。状态跟站点走，跨会话、跨任务续传。
+- **状态目录**：`~/.config/lexiang-websync/{域名}/`（config.json / manifest.json / reports/ / dashboard/）。状态跟站点走，跨会话、跨任务续传。
+- **可视化看板**：三态同一模板（`references/dashboard.html`）——dry-run 出 `preview.html`（静态自包含，按最终落地布局渲染目录树供前置确认）；正式同步时内置 127.0.0.1 临时端口 HTTP 服务 + 原子写 `status.json`，实时看板每 1.5s 轮询展示进度条/当前文档/逐项状态/失败原因；结束后出 `report.html`（静态自包含最终报告），HTTP 服务自动关闭。`--no-dashboard` 可全部关闭。看板树深度用 menu tree `parent_path` 链计算（**不用 path 段差**——menu 平铺节点如 mapping 的树父是 section 而非 path 倒数第二段）；被 sidebar 组显式引用的节点禁止被 emit_descendants 按 path 前缀捕获。
 - **半成品恢复**：UPLOAD/VERIFY 中途失败已留半成品 entry → 自动发现父目录同名 entry 补录 manifest（空 hash），重试时用 `--entry-id` 覆盖更新，避免重复建页。
 - **布局自适应**：hash 未变但 entry parent 错位时（如旧 sync 父是 page、新 sync 父是 folder），`_sync_page` 顶部强制 move_entry + 更新 manifest.parent，确保 layout 始终与 menu tree 对齐。
 - **鉴权**：复用 Agent 内置乐享连接器 OAuth token（`X-Oneid-Access-Token`，端点 `https://mcp.lexiang-app.com/mcp`），过期自动降级本地 MCP 代理；页面正文上传复用 upload-markdown-to-lexiang 公共 CLI。沙箱禁 `ps` 时建议**显式 `--lexiang-profile`** 跳过代理检测。
@@ -132,6 +136,8 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
 | 删除同步误判 sidebar group 为消失节点 | 已修复：删除同步的 `current` 集合排除 `_sidebar_group__` 前缀的 manifest key |
 | sidebar 隐藏但 menu JSON 有的页（不在 sidebar HTML 渲染） | 这些页（如某些 `LoginConfig/strategy` ）挂在 section root 下一级，需用户手动 group 它们 |
 | 页面多导致单轮耗时长 | 57 页含 640+ 图全量约 1 小时（图片逐张上传）；纯增量轮仅约 25 秒。大规模站点建议先 `--max-pages 3` 试跑验证质量再全量 |
+| 预览/看板树层级错乱（如「字段映射说明」显示过深、「关联规则」跑出分组） | 已修复两处：① 深度必须用 menu tree `parent_path` 链计算（path 段差不可靠）② 被 sidebar 组显式引用的节点禁止被 emit_descendants 按 path 前缀捕获（menu 平铺 vs sidebar 分组语义冲突）。修改 `build_tree_items` 时注意保持这两条 |
+| 实时看板打不开 / 同步后 URL 失效 | 看板 HTTP 服务是 sync 进程的 daemon 线程，**只在同步运行期间存活**；进程退出自动关闭是设计使然。同步结束后用静态 `report.html`（dashboard/ 目录下）查看最终状态 |
 
 ## 架构与扩展
 

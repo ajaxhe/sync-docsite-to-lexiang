@@ -12,6 +12,7 @@
 - **增量同步**：以页面内容 hash（SHA256）判断变更，未变的页面秒级跳过
 - **删除同步（安全）**：源端消失的页面移入乐享回收站文件夹 `_回收站_站点同步`（不是真删除）；消失比例 >30% 自动中止，需 `--force-delete` 才继续
 - **幂等 + 断点续传**：每项成功立即落盘 manifest，中断后重跑不重不漏；状态按域名隔离，跨会话续传
+- **可视化看板**：dry-run 生成 `preview.html` 前置确认页（按乐享侧最终布局渲染目录树，双击即开）；正式同步自带实时进度看板（`http://127.0.0.1:<port>/`，进度条 / 当前文档 / 逐项状态 / 失败原因，1.5s 自动刷新）；结束后生成静态 `report.html` 留档
 - **WAF 消毒**：自动处理会触发乐享 WAF 误判的内容模式（如 LDAP 过滤器），保证上传成功
 
 ## 前置要求
@@ -69,7 +70,7 @@ python3 sync.py --url "<站点入口URL>" \
 
 输出 JSON 含站点类型（`nextjs-nextra` / `generic`）、菜单树预览、页面总数。
 
-### 2. dry-run 预览清单
+### 2. dry-run 预览清单 + 前置确认页
 
 ```bash
 python3 sync.py --url "<站点入口URL>" \
@@ -77,15 +78,19 @@ python3 sync.py --url "<站点入口URL>" \
   --scope section --dry-run
 ```
 
-输出待导入的目录/页面计数与清单，确认范围后再正式执行。
+输出待导入的目录/页面计数与清单，同时生成 **`preview.html`**（路径见输出 JSON 的 `preview_html` 字段）——静态自包含页面，按**乐享侧最终落地布局**渲染完整目录树：sidebar 分组、目录/页面层级、待新建/已存在标注、sidebar 隐藏页兜底提示。**双击打开确认层级符合预期后**，再正式执行。
 
-### 3. 正式同步
+### 3. 正式同步（实时进度看板）
 
 ```bash
 python3 sync.py --url "<站点入口URL>" \
   --target-space-id <乐享space_id> --target-folder-id <目标目录entry_id> \
   --scope section --delete-mode sync --lexiang-profile default
 ```
+
+- 同步启动后 stderr 打印 **`📊 实时看板: http://127.0.0.1:<port>/`**，浏览器打开即可实时查看：整体进度条、当前正在导入的文档、每个文档状态（等待/导入中/新建成功/已更新/未变更/❌失败+原因）。页面每 1.5s 自动刷新，同步结束服务自动关闭
+- 结束后自动生成静态 **`report.html`**（输出 JSON 的 `report_html` 字段），内容与看板最终状态一致，可保存转发
+- 看板文件统一在 `~/.config/lexiang-websync/<域名>/dashboard/`；`--no-dashboard` 可全部关闭
 
 页面多时可能需要 5-20 分钟，建议后台执行。同步状态存于 `~/.config/lexiang-websync/<域名>/`，源站更新后重跑同一命令即增量同步。
 
@@ -106,6 +111,7 @@ python3 sync.py --url "<站点入口URL>" \
 | `--force-delete` | 消失比例 >30% 时仍继续删除同步 |
 | `--no-adopt-orphan` | 关闭 sidebar 隐藏页的兜底归组（默认开启） |
 | `--check-deps` | 仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证）就退出，不要求 `--url` |
+| `--no-dashboard` | 不生成 preview.html / 实时看板 / report.html（默认全部生成） |
 | `--no-waf-sanitize` | 关闭 WAF 内容消毒 |
 
 ## 工作机制

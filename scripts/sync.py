@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from site_crawler import probe_site, fetch_page, CrawlError, http_get
 from html2md import convert as html2md_convert
+import dashboard as dashmod
 from manifest import (
     load_config, save_config, load_manifest, save_manifest,
     compute_hash, now_iso, state_dir, report_path,
@@ -277,6 +278,7 @@ def apply_sidebar_groups(profile, section_path, manifest, lx, args,
         rec = manifest["folders"].get(gkey)
         if rec and lx.probe_entry(rec["entry_id"])["exists"]:
             group_folders[title] = rec["entry_id"]
+            dash_set(gkey, "skipped")
         else:
             fid = lx.create_folder(args.target_space_id, title, section_parent)
             group_folders[title] = fid
@@ -285,6 +287,7 @@ def apply_sidebar_groups(profile, section_path, manifest, lx, args,
                 "kind": "sidebar_group"}
             save_manifest(args.url, manifest)
             stats["folders_new"] += 1
+            dash_set(gkey, "success")
             log(f"  📂 新建 sidebar 分组: {title}")
     # 2) 按 sidebar 顺序移动 children；group 之间在 section 下也按出现顺序
     prev_in_section = None  # section_parent 下
@@ -377,7 +380,128 @@ def apply_sidebar_groups(profile, section_path, manifest, lx, args,
             log(f"  （共 {adopted} 个 sidebar 隐藏页归组）")
 
 
+# ── 看板状态（preview.html / 实时 / report.html 三态）────────────────
+# _DASH = {"dir", "state", "server", "url"}；None 表示看板关闭
+_DASH = None
+
+
+def _dash_new_state(args, profile, root_title, items, mode, manifest):
+    st = {}
+    for it in items:
+        k = it["key"]
+        if mode == "preview":
+            # dry-run：标注「待新建 / 已存在」供用户确认范围
+            bucket = manifest["folders"] if it["kind"] in ("folder", "group") \
+                else manifest["pages"]
+            st[k] = {"state": "exists" if k in bucket else "will_create",
+                     "error": None}
+        else:
+            st[k] = {"state": "pending", "error": None}
+    return {
+        "site_url": args.url, "site_type": profile["site_type"],
+        "scope": args.scope, "root_title": root_title or "(全站)",
+        "target_space_id": args.target_space_id,
+        "target_folder_id": args.target_folder_id or "",
+        "mode": mode, "finished": False,
+        "started_at": now_iso(), "updated_at": now_iso(),
+        "phase": "", "current": "",
+        "items": items, "status": st,
+        "stats": {"total": len(items), "done": 0, "success": 0,
+                  "updated": 0, "skipped": 0, "failed": 0, "trashed": 0},
+        "failures": [],
+    }
+
+
+def _dash_recompute(state):
+    done = succ = upd = skip = fail = 0
+    for v in state["status"].values():
+        s = v["state"]
+        if s in ("pending", "running", "will_create", "exists"):
+            continue
+        done += 1
+        if s == "success":
+            succ += 1
+        elif s in ("updated", "verify_warn"):
+            upd += 1
+        elif s == "skipped":
+            skip += 1
+        elif s == "failed":
+            fail += 1
+    state["stats"].update({"done": done, "success": succ, "updated": upd,
+                           "skipped": skip, "failed": fail})
+
+
+def _dash_flush():
+    if not _DASH:
+        return
+    _DASH["state"]["updated_at"] = now_iso()
+    _dash_recompute(_DASH["state"])
+    dashmod.write_status(_DASH["dir"], _DASH["state"])
+
+
+def _dash_item_title(key):
+    for it in _DASH["state"]["items"]:
+        if it["key"] == key:
+            return it["title"]
+    return key
+
+
+def dash_set(key, state_name, error=None):
+    if not _DASH:
+        return
+    rec = _DASH["state"]["status"].get(key)
+    if rec is None:
+        rec = {"state": "pending", "error": None}
+        _DASH["state"]["status"][key] = rec
+    rec["state"] = state_name
+    rec["error"] = error
+    if state_name == "failed" and error:
+        _DASH["state"]["failures"].append(
+            {"key": key, "title": _dash_item_title(key), "error": error})
+    _dash_flush()
+
+
+def dash_phase(text, current=""):
+    if not _DASH:
+        return
+    _DASH["state"]["phase"] = text
+    _DASH["state"]["current"] = current
+    _dash_flush()
+
+
+def dash_trash():
+    if not _DASH:
+        return
+    _DASH["state"]["stats"]["trashed"] += 1
+    _dash_flush()
+
+
+def dash_finish(ok=True):
+    """写最终 status.json + 静态 report.html，关停本地服务。返回信息 dict。"""
+    global _DASH
+    if not _DASH:
+        return None
+    _DASH["state"]["mode"] = "done"
+    _DASH["state"]["finished"] = True
+    _DASH["state"]["phase"] = "已完成" if ok else "异常终止"
+    _DASH["state"]["current"] = ""
+    _dash_flush()
+    report_html = dashmod.write_static(_DASH["dir"], "report.html",
+                                       _DASH["state"])
+    info = {"report_html": report_html, "dashboard_url": _DASH["url"]}
+    srv = _DASH.get("server")
+    if srv:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+    log(f"  📊 最终报告: {report_html}")
+    _DASH = None
+    return info
+
+
 def main():
+    global _DASH
     ap = argparse.ArgumentParser(description="文档站点 → 乐享同步")
     ap.add_argument("--url", default=None,
                     help="站点入口 URL（--check-deps 时不需要）")
@@ -402,6 +526,8 @@ def main():
                     help="不把 sidebar 隐藏但 menu JSON 存在的页归入相邻 group")
     ap.add_argument("--check-deps", action="store_true",
                     help="仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证），不连接站点")
+    ap.add_argument("--no-dashboard", action="store_true",
+                    help="不生成 preview.html / 实时看板 / report.html（默认生成）")
     # parse_known_args 允许携带透传给子工具的额外参数（如 --check-deps --json）
     args, extras = ap.parse_known_args()
 
@@ -492,13 +618,21 @@ def main():
     save_config(args.url, config)
     manifest = load_manifest(args.url)
 
+    # ── 看板树（dry-run 预览 / 正式同步实时看板共用）─────────────────
+    section_path = scope_nodes[0]["path"] if scope_nodes else ""
+    dash_dir = os.path.join(str(state_dir(args.url)), "dashboard")
+    dash_items = [] if args.no_dashboard else dashmod.build_tree_items(
+        scope_nodes, nodes, profile, section_path, root_title)
+
     # dry-run 清单
     plan = {"create": [], "update": [], "skip": [], "folders_new": []}
     for nd in nodes:
         key = nd["path"]
         if nd["has_children"] or nd["directory"]:
+            # 目录节点：建 folder，不计入页面新建
             if key not in manifest["folders"]:
                 plan["folders_new"].append(key)
+            continue
         rec = manifest["pages"].get(key)
         if not rec:
             plan["create"].append({"path": key, "title": nd["title"]})
@@ -511,6 +645,19 @@ def main():
                 if key not in current:
                     to_trash.append({"path": key, "entry_id": rec["entry_id"],
                                      "name": rec.get("name")})
+        preview_html = None
+        if not args.no_dashboard:
+            # 前置确认页：静态自包含，用户双击打开核对目录层级
+            state = _dash_new_state(args, profile, root_title, dash_items,
+                                    "preview", manifest)
+            state["plan"] = {
+                "new_folders": len(plan["folders_new"]),
+                "new_pages": len(plan["create"]),
+                "known_pages": len(manifest["pages"]),
+                "to_trash": len(to_trash),
+            }
+            preview_html = dashmod.write_static(dash_dir, "preview.html", state)
+            log(f"  📋 前置确认页: {preview_html}")
         print(json.dumps({
             "ok": True, "dry_run": True,
             "site_type": profile["site_type"],
@@ -522,6 +669,7 @@ def main():
                 "known_pages": len(manifest["pages"]),
                 "to_trash": to_trash,
             },
+            "preview_html": preview_html,
             "menu_preview": [
                 {"title": n["title"], "path": n["path"],
                  "children": len(n.get("children") or [])}
@@ -541,6 +689,16 @@ def main():
              "media_failed": 0, "trashed": 0, "trash_failed": 0,
              "waf_sanitized": 0, "verify_warn": 0}
     failures = []
+    # ── 启动实时看板（127.0.0.1 临时端口，进程退出自动销毁）────────────
+    if not args.no_dashboard:
+        state = _dash_new_state(args, profile, root_title, dash_items,
+                                "sync", manifest)
+        dashmod.write_status(dash_dir, state)
+        srv, dash_url = dashmod.start_server(dash_dir)
+        _DASH = {"dir": dash_dir, "state": state, "server": srv,
+                 "url": dash_url}
+        log(f"  📊 实时看板: {dash_url}"
+            "（同步期间自动刷新；结束后生成静态 report.html）")
     try:
         log("[3/6] 连接乐享")
         sel = resolve_personal_credential_selector(
@@ -580,9 +738,11 @@ def main():
 
         # 目录结构：预建 directory 节点
         log("[4/6] 建目录结构 + 同步页面")
+        dash_phase("建目录结构 + 同步页面")
         nodes_by_path = {nd["path"]: nd for nd in nodes}
         for nd in nodes:
             key = nd["path"]
+            dash_phase("建目录结构 + 同步页面", nd["title"])
             # 父节点：用 menu tree 真实父（flatten_nodes 已记录 parent_path），
             # 与「path 推父」不同——如 mapping 的树父是 SyncConfig，
             # 而 path 推导会得到不存在的 configItem 节点，落回到 section root。
@@ -613,6 +773,9 @@ def main():
                             rec["entry_id"] = lx.create_folder(
                                 args.target_space_id, nd["title"], node_parent)
                             save_manifest(args.url, manifest)
+                            dash_set(key, "updated")
+                        else:
+                            dash_set(key, "skipped")
                     else:
                         log(f"  建目录: {nd['title']}")
                         fid = lx.create_folder(args.target_space_id,
@@ -622,6 +785,7 @@ def main():
                             "parent": node_parent}
                         save_manifest(args.url, manifest)
                         stats["folders_new"] += 1
+                        dash_set(key, "success")
                 else:
                     # 无 children 的目录：抓页面判断有无正文
                     node_url = normalize_node_url(nd["url"], profile["base_url"])
@@ -642,6 +806,9 @@ def main():
                                 rec["entry_id"] = lx.create_folder(
                                     args.target_space_id, nd["title"], node_parent)
                                 save_manifest(args.url, manifest)
+                                dash_set(key, "updated")
+                            else:
+                                dash_set(key, "skipped")
                         else:
                             log(f"  建目录: {nd['title']}")
                             fid = lx.create_folder(args.target_space_id,
@@ -651,6 +818,7 @@ def main():
                                 "parent": node_parent}
                             save_manifest(args.url, manifest)
                             stats["folders_new"] += 1
+                            dash_set(key, "success")
             else:
                 # 叶子 → page
                 node_url = normalize_node_url(nd["url"], profile["base_url"])
@@ -658,12 +826,15 @@ def main():
                     stats["pages_failed"] += 1
                     failures.append({"path": key,
                                      "error": f"节点 URL 无效: {nd['url']!r}"})
+                    dash_set(key, "failed", f"节点 URL 无效: {nd['url']!r}")
                     continue
+                dash_set(key, "running")
                 try:
                     page = fetch_page(node_url)
                 except CrawlError as e:
                     stats["pages_failed"] += 1
                     failures.append({"path": key, "error": str(e)})
+                    dash_set(key, "failed", str(e)[:300])
                     continue
                 _sync_page(nd, page, manifest, lx, uploader, args,
                            node_parent, stats, failures, args.url,
@@ -674,12 +845,14 @@ def main():
         # 按 sidebar 出现顺序，用 entry_move_entry(+after) 重排已有 entry，
         # 并补建缺失的 group folder（manifest._sidebar_group__ 命名空间）。
         section_path = scope_nodes[0]["path"] if scope_nodes else ""
+        dash_phase("Sidebar 分组重排")
         apply_sidebar_groups(profile, section_path, manifest, lx, args,
                               parent, stats)
 
         # ── 删除同步 ──────────────────────────────────────
         if args.delete_mode == "sync" and manifest["pages"]:
             log("[5/6] 删除同步（回收站模式）")
+            dash_phase("删除同步（回收站模式）")
             current = {nd["path"] for nd in nodes} | \
                 {nd["path"].rsplit("/", 1)[0] for nd in nodes if "/" in nd["path"]}
             # 完整祖先集合
@@ -731,6 +904,7 @@ def main():
                         lx.move_entry(rec["entry_id"], trash_id)
                         moved.add(key)
                         stats["trashed"] += 1
+                        dash_trash()
                         log(f"  🗑 移入回收站: {rec.get('name', key)}")
                     except LexiangError as e:
                         stats["trash_failed"] += 1
@@ -752,6 +926,8 @@ def main():
 
         # ── 报告 ──────────────────────────────────────────
         log("[6/6] 生成报告")
+        dash_phase("生成报告")
+        dash_info = dash_finish(ok=not failures)
         rp = report_path(args.url)
         with open(rp, "w", encoding="utf-8") as f:
             f.write(f"# 站点同步报告\n\n- 时间：{now_iso()}\n"
@@ -769,11 +945,15 @@ def main():
         result = {"ok": True, "stats": stats, "failures": len(failures),
                   "report": str(rp),
                   "state_dir": str(state_dir(args.url))}
+        if dash_info:
+            result["report_html"] = dash_info["report_html"]
+            result["dashboard_url"] = dash_info["dashboard_url"]
         if failures:
             result["ok"] = "partial"
         print(json.dumps(result, ensure_ascii=False))
         return 0 if not failures else 1
     except (LexiangError, CrawlError) as e:
+        dash_finish(ok=False)
         print(json.dumps({"ok": False, "error": str(e)}))
         return 2
     finally:
@@ -785,6 +965,7 @@ def _sync_page(nd, page, manifest, lx, uploader, args, node_parent,
     """同步单个页面：hash 增量判断 + 工作包 + uploader CLI。"""
     key = nd["path"]
     title = nd["title"]
+    dash_set(key, "running")
     md, media = html2md_convert(page["content_html"], base_url,
                                 page.get("title", ""))
     content_hash = compute_hash(md, page.get("update_time", ""))
@@ -803,6 +984,7 @@ def _sync_page(nd, page, manifest, lx, uploader, args, node_parent,
             log(f"  ⚠️ 调整归属失败: {title}: {str(e)[:80]}")
     if rec and rec.get("content_hash") == content_hash:
         stats["pages_skipped"] += 1
+        dash_set(key, "skipped")
         return
     workdir, md_path, dl, total_m = build_workpackage(md, media, base_url)
     stats["media_downloaded"] += dl
@@ -851,9 +1033,11 @@ def _sync_page(nd, page, manifest, lx, uploader, args, node_parent,
                 f"上传响应缺少 entry_id: {str(payload)[:200]}")
         if rec:
             stats["pages_updated"] += 1
+            dash_set(key, "updated")
             log(f"  ✏️ 更新: {title}")
         else:
             stats["pages_new"] += 1
+            dash_set(key, "success")
             log(f"  ✅ 新建: {title} -> {page_url}")
         manifest["pages"][key] = {
             "entry_id": entry_id, "name": title, "url": nd["url"],
@@ -886,10 +1070,12 @@ def _sync_page(nd, page, manifest, lx, uploader, args, node_parent,
                     "verify_failed": True,
                 }
                 save_manifest(entry_url, manifest)
+                dash_set(key, "verify_warn")
                 log(f"  ⚠️ 写入完成但校验误报（round-trip），已记录: {title}")
                 return
         stats["pages_failed"] += 1
         failures.append({"path": key, "error": err[:300]})
+        dash_set(key, "failed", err[:300])
         log(f"  ❌ 失败: {title}: {err[:120]}")
         # 半成品恢复：UPLOAD_ERROR（写入中断）时 entry 已创建。找到父节点下
         # 同名 entry 记入 manifest，重试时走 --entry-id 覆盖更新，避免重复建页。

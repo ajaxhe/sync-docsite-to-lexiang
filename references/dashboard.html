@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>乐享文档站同步 · 看板</title>
+<style>
+:root{
+  --bg:#f4f5f7; --card:#ffffff; --border:#e4e7ec; --text:#1f2329; --muted:#6b7280;
+  --blue:#2563eb; --blue-bg:#eff6ff; --green:#16a34a; --green-bg:#f0fdf4;
+  --red:#dc2626; --red-bg:#fef2f2; --orange:#d97706; --orange-bg:#fffbeb;
+  --gray:#9ca3af; --bar-bg:#e5e7eb;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--text);padding:24px 16px;font-size:14px;line-height:1.5}
+.wrap{max-width:920px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:16px 20px;margin-bottom:14px}
+.title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1{font-size:18px;font-weight:600}
+h2{font-size:15px;font-weight:600;margin-bottom:10px}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.badge-preview{background:var(--blue-bg);color:var(--blue)}
+.badge-sync{background:var(--orange-bg);color:var(--orange)}
+.badge-done{background:var(--green-bg);color:var(--green)}
+.meta{margin-top:8px;color:var(--muted);font-size:12.5px;word-break:break-all}
+.meta b{color:var(--text);font-weight:500}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:12px 14px;text-align:center}
+.stat .num{font-size:22px;font-weight:700}
+.stat .lbl{font-size:12px;color:var(--muted);margin-top:2px}
+.stat.c-total .num{color:var(--text)}
+.stat.c-ok .num{color:var(--green)}
+.stat.c-skip .num{color:var(--gray)}
+.stat.c-fail .num{color:var(--red)}
+.stat.c-new .num{color:var(--blue)}
+.bar{height:10px;background:var(--bar-bg);border-radius:999px;overflow:hidden}
+.bar-fill{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#2563eb);
+  border-radius:999px;transition:width .4s ease}
+.bar-fill.done{background:linear-gradient(90deg,#22c55e,#16a34a)}
+.bar-text{margin-top:6px;font-size:12.5px;color:var(--muted)}
+.phase{margin-top:8px;font-size:13px}
+.phase .cur{color:var(--orange);font-weight:500}
+#tree{max-height:560px;overflow-y:auto}
+.row{display:flex;align-items:flex-start;gap:8px;padding:5px 8px;border-radius:6px}
+.row:hover{background:#f8fafc}
+.row .ico{flex:none;width:20px;text-align:center}
+.row .body{flex:1;min-width:0}
+.row .name{font-size:13.5px;word-break:break-all}
+.row .name.folder{font-weight:600}
+.row .name.group{font-weight:700;color:var(--blue)}
+.row .note{font-size:11.5px;color:var(--muted)}
+.row .err{font-size:12px;color:var(--red);margin-top:2px;word-break:break-all}
+.row .st{flex:none;font-size:12px;padding:1px 8px;border-radius:999px;white-space:nowrap}
+.st-pending{background:#f3f4f6;color:var(--gray)}
+.st-running{background:var(--orange-bg);color:var(--orange)}
+.st-success{background:var(--green-bg);color:var(--green)}
+.st-updated{background:var(--green-bg);color:var(--green)}
+.st-skipped{background:#f3f4f6;color:var(--muted)}
+.st-failed{background:var(--red-bg);color:var(--red)}
+.st-verify_warn{background:var(--orange-bg);color:var(--orange)}
+.st-will_create{background:var(--blue-bg);color:var(--blue)}
+.st-exists{background:#f3f4f6;color:var(--muted)}
+.fail-item{padding:8px 10px;border-left:3px solid var(--red);background:var(--red-bg);
+  border-radius:0 6px 6px 0;margin-bottom:8px}
+.fail-item .ft{font-weight:600;font-size:13px}
+.fail-item .fe{font-size:12.5px;color:#7f1d1d;margin-top:2px;word-break:break-all}
+.footer{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 20px}
+.pulse{animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+</style>
+</head>
+<body>
+<!--__STATE_INJECT__-->
+<div class="wrap">
+  <div class="card">
+    <div class="title-row"><span id="mode-badge" class="badge badge-sync">…</span><h1 id="page-title">文档站同步</h1></div>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="card" id="progress-card" style="display:none">
+    <div class="bar"><div class="bar-fill" id="bar-fill"></div></div>
+    <div class="bar-text" id="bar-text"></div>
+    <div class="phase" id="phase"></div>
+  </div>
+  <div class="card" id="fail-card" style="display:none">
+    <h2>❌ 失败明细（含原因）</h2>
+    <div id="fail-list"></div>
+  </div>
+  <div class="card">
+    <h2 id="tree-title">📂 目录结构</h2>
+    <div id="tree"></div>
+  </div>
+  <div class="footer" id="footer"></div>
+</div>
+<script>
+var STATUS_TEXT = {pending:'等待', running:'导入中', success:'新建成功', updated:'已更新',
+  skipped:'未变更', failed:'失败', verify_warn:'校验误报', will_create:'待新建', exists:'已存在'};
+var KIND_ICON = {folder:'📂', group:'🗂️', page:'📄'};
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function fmtTime(s){return s ? String(s).replace('T',' ').slice(0,19) : '—';}
+
+function render(st){
+  var modeMap = {preview:['📋 预览确认','badge-preview','请确认以下目录层级符合预期，再执行正式同步'],
+    sync:['🔄 同步中','badge-sync','实时进度每 1.5 秒自动刷新'],
+    done:['✅ 同步完成','badge-done','最终同步报告']};
+  var m = modeMap[st.mode] || modeMap.sync;
+  var badge = document.getElementById('mode-badge');
+  badge.textContent = m[0]; badge.className = 'badge ' + m[1];
+  document.getElementById('page-title').textContent =
+    (st.root_title && st.root_title !== '(全站)' ? st.root_title + ' · ' : '') + '文档站 → 乐享';
+  document.title = m[0] + ' · 乐享文档站同步';
+
+  var meta = '<b>源站</b>：' + esc(st.site_url) + '<br>' +
+    '<b>范围</b>：' + esc(st.scope) + (st.root_title ? '（' + esc(st.root_title) + '）' : '') +
+    '　<b>站点类型</b>：' + esc(st.site_type || '—') + '<br>' +
+    '<b>目标</b>：space=' + esc(st.target_space_id || '—') +
+    (st.target_folder_id ? '　folder=' + esc(st.target_folder_id) : '') + '<br>' +
+    '<b>开始</b>：' + fmtTime(st.started_at) + '　<b>最近更新</b>：' + fmtTime(st.updated_at) +
+    '　<b>说明</b>：' + m[2];
+  document.getElementById('meta').innerHTML = meta;
+
+  // 统计卡片
+  var counts = {will_create:0, exists:0}, k;
+  for (k in st.status) { var v = st.status[k].state; if (counts[v] !== undefined) counts[v]++; }
+  var s = st.stats || {};
+  var cards = '';
+  if (st.mode === 'preview') {
+    cards = statCard('c-total', (st.items||[]).length, '总节点') +
+      statCard('c-new', counts.will_create, '待新建') +
+      statCard('c-skip', counts.exists, '已存在（增量判断）');
+  } else {
+    cards = statCard('c-total', s.total || 0, '总节点') +
+      statCard('c-ok', (s.success||0) + (s.updated||0), '成功（新建+更新）') +
+      statCard('c-skip', s.skipped || 0, '跳过（未变更）') +
+      statCard('c-fail', s.failed || 0, '失败') +
+      (s.trashed ? statCard('c-skip', s.trashed, '移入回收站') : '');
+  }
+  document.getElementById('stats').innerHTML = cards;
+
+  // 进度条
+  if (st.mode !== 'preview') {
+    document.getElementById('progress-card').style.display = '';
+    var total = s.total || 0, done = s.done || 0;
+    var pct = total ? Math.round(done * 100 / total) : 0;
+    var fill = document.getElementById('bar-fill');
+    fill.style.width = pct + '%';
+    fill.className = 'bar-fill' + (st.finished ? ' done' : '');
+    document.getElementById('bar-text').textContent =
+      '进度 ' + done + ' / ' + total + '（' + pct + '%）';
+    var ph = '';
+    if (st.phase) ph += '当前阶段：<b>' + esc(st.phase) + '</b>';
+    if (st.current && !st.finished) ph += '　<span class="cur pulse">▶ ' + esc(st.current) + '</span>';
+    document.getElementById('phase').innerHTML = ph;
+  }
+
+  // 目录树
+  var html = '', items = st.items || [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var sv = (st.status || {})[it.key] || {};
+    var stName = sv.state || 'pending';
+    html += '<div class="row" style="padding-left:' + (it.depth * 22 + 8) + 'px">' +
+      '<span class="ico">' + (KIND_ICON[it.kind] || '📄') + '</span>' +
+      '<div class="body"><div class="name ' + esc(it.kind) + '">' + esc(it.title) + '</div>' +
+      (it.note ? '<div class="note">' + esc(it.note) + '</div>' : '') +
+      (sv.error ? '<div class="err">' + esc(sv.error) + '</div>' : '') +
+      '</div><span class="st st-' + esc(stName) + '">' + (STATUS_TEXT[stName] || stName) + '</span></div>';
+  }
+  document.getElementById('tree').innerHTML = html;
+  document.getElementById('tree-title').textContent =
+    st.mode === 'preview' ? '📂 即将导入的目录结构（与乐享侧最终布局一致）' : '📂 目录结构与导入状态';
+
+  // 失败明细
+  var fails = st.failures || [];
+  if (fails.length) {
+    document.getElementById('fail-card').style.display = '';
+    var fh = '';
+    for (var j = 0; j < fails.length; j++) {
+      fh += '<div class="fail-item"><div class="ft">❌ ' + esc(fails[j].title || fails[j].key) + '</div>' +
+        '<div class="fe">' + esc(fails[j].error) + '</div></div>';
+    }
+    document.getElementById('fail-list').innerHTML = fh;
+  }
+
+  document.getElementById('footer').textContent =
+    st.mode === 'sync'
+      ? (st.finished ? '同步已结束。' : '数据来自 status.json，每 1.5 秒自动刷新。') + ' sync-docsite-to-lexiang'
+      : '本页面为静态自包含文件，可直接保存或转发。 sync-docsite-to-lexiang';
+}
+
+function statCard(cls, num, lbl){
+  return '<div class="stat ' + cls + '"><div class="num">' + num + '</div><div class="lbl">' + lbl + '</div></div>';
+}
+
+if (window.__SYNC_STATE__) {
+  render(window.__SYNC_STATE__);   // 静态模式（preview.html / report.html）
+} else {
+  (function poll(){                 // 实时模式（本地 HTTP 服务）
+    fetch('/status.json?_=' + Date.now()).then(function(r){return r.json();}).then(function(st){
+      render(st);
+      if (!st.finished) setTimeout(poll, 1500);
+    }).catch(function(){ setTimeout(poll, 3000); });
+  })();
+}
+</script>
+</body>
+</html>

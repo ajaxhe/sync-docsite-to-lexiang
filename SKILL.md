@@ -17,10 +17,22 @@ description: 把网页文档站点（如 Next.js/Nextra/Docusaurus 类文档中�
 4. **删除只针对 manifest 里记录的 entry**。目标目录之外的文档绝不会被动。消失比例 >30% 自动中止（需 `--force-delete` 才继续）。
 5. **禁止**：逐篇 Read 网页正文、把 HTML/Markdown 贴进对话、用 LLM 转换内容。一切转换在脚本内完成。
 6. 不明确目标乐享目录时**先问用户**，不要猜。
+7. **必需依赖：upload-markdown-to-lexiang skill**（提供 `lexiang_upload.py` CLI，页面正文上传依赖）。`--probe-only` / `--dry-run` 不依赖它。装完本 skill 立刻跑 `python3 scripts/sync.py --check-deps` 确认依赖就绪，缺哪个就停下去告诉用户装哪个，不要尝试自己实现或绕过。
 
 ## 快速开始（标准 SOP）
 
-### 第 0 步：收集参数（唯一需要 LLM 参与的环节）
+### 第 0 步：检查依赖（安装后立刻跑一次，后续可跳过）
+
+```bash
+cd ~/.workbuddy/skills/sync-docsite-to-lexiang/scripts
+python3 sync.py --check-deps
+```
+
+输出三项状态：Python 版本 / upload-markdown-to-lexiang CLI / 乐享凭证。任意 ✗ 项根据给出的 `修复:` 命令一键解决（最常见：缺 `upload-markdown-to-lexiang`，需 `git clone https://github.com/ajaxhe/upload-markdown-to-lexiang.git ~/.workbuddy/skills/upload-markdown-to-lexiang`）。
+
+无需 `--url`，**这条命令本身就是 fail-fast 的体检**。日常 sync 前再跑一次也行，但通常只在首次安装 + 凭证变更时跑。
+
+### 第 1 步：收集参数（唯一需要 LLM 参与的环节）
 
 向用户收集并确认：
 
@@ -83,6 +95,7 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
 | `--lexiang-profile` | 自动 | 多企业凭证 profile（见 upload-markdown-to-lexiang 约定） |
 | `--no-waf-sanitize` | off | 关闭乐享 WAF 危险模式消毒（一般别关） |
 | `--no-adopt-orphan` | off | 关闭 sidebar 隐藏但 menu JSON 存在页的兜底归组（默认开启，按 path 兄弟定位 group 末尾） |
+| `--check-deps` | off | 仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证）就退出，不要求 `--url`；可加 `--json` 出 JSON 摘要 |
 
 ## 同步机制（了解即可，脚本自动处理）
 
@@ -113,6 +126,7 @@ python3 sync.py --url "<入口URL>" --target-space-id <sid> \
 | `VERIFY_ERROR: 缺少长段落锚点` | **多为误报**：含 markdown 链接的段落经乐享渲染 round-trip 后链接展开为两遍文本，本地锚点单遍匹配不上。脚本已按"写入成功+verify_failed 标记"处理（stats.verify_warn），报告会列出，可人工抽查远程页面确认内容完整 |
 | `UPLOAD_ERROR` 半成品 | 已自动记录 partial entry（空 hash），重试时 `--entry-id` 覆盖更新，不重复建页；如有多轮产生的重复 entry，移入回收站 |
 | 抓取超时 / 菜单为空 | 站点无适配器或结构特殊 → 停止并报告，勿盲试 |
+| **`未找到 upload-markdown-to-lexiang CLI`（正式同步阶段）** | **缺关键依赖**：`python3 scripts/sync.py --check-deps` 看 ✗ 项按提示安装；或设 `LEXIANG_UPLOADER_HOME` 指向自定义位置 |
 | `已有同步在进行` | 锁未释放；确认无并发后删 `~/.config/lexiang-websync/{域名}/.sync.lock` |
 | 删除中止（>30% 消失） | 先人工核对站点是否真删了这些页；确认后加 `--force-delete` 重跑 |
 | 删除同步误判 sidebar group 为消失节点 | 已修复：删除同步的 `current` 集合排除 `_sidebar_group__` 前缀的 manifest key |

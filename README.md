@@ -18,16 +18,44 @@
 
 - Python 3.9+
 - 目标站点**公开可访问**（需要登录 / 付费墙 / 验证码的站点不支持，也不尝试绕过）
-- 乐享 MCP API Token（`lxmcp_` 开头）：从 <https://lexiangla.com/ai/claw> 获取
+- 乐享 MCP API Token（`lxmcp_` 开头）：从 <https://lexiangla.com/ai/claw> 获取（**probe-only / dry-run 不需要**；正式同步时复用 upload-markdown-to-lexiang 的凭证或 Agent 内置连接器 OAuth）
 
-## 安装
+### 必需依赖 skill
+
+本 skill 与 [`sync-obsidian-to-lexiang`](https://github.com/ajaxhe/sync-obsidian-to-lexiang) 共享同一架构：**目录/探活/独立附件走乐享 MCP** + **页面正文上传复用公共 CLI**。正文上传由 `upload-markdown-to-lexiang` 提供，所以本 skill 依赖它。
+
+**完整安装命令**（一行搞定，两个 skill 一起 clone 到 `~/.workbuddy/skills/`）：
 
 ```bash
 git clone https://github.com/ajaxhe/sync-docsite-to-lexiang.git \
-  ~/.workbuddy/skills/sync-docsite-to-lexiang
+  ~/.workbuddy/skills/sync-docsite-to-lexiang && \
+git clone https://github.com/ajaxhe/upload-markdown-to-lexiang.git \
+  ~/.workbuddy/skills/upload-markdown-to-lexiang
 ```
 
-也可复制到任意 Agent 的 skills 根目录（如 `~/.workbuddy/skills/`）。
+也可复制到任意 Agent 的 skills 根目录（如 `~/.qclaw/skills/`、`~/clawd/skills/`），脚本按 `LEXIANG_UPLOADER_HOME` 环境变量 → 同根目录 → `~/.workbuddy/skills/` 顺序查找。
+
+### 装完立即验证
+
+```bash
+python3 ~/.workbuddy/skills/sync-docsite-to-lexiang/scripts/sync.py --check-deps
+# 加 --json 输出程序可消费的摘要
+```
+
+输出示例：
+
+```
+[✓] Python
+    当前: 3.13.12
+[✓] upload-markdown-to-lexiang CLI
+    当前: ~/.workbuddy/skills/upload-markdown-to-lexiang/scripts/lexiang_upload.py
+[✓] 乐享凭证
+    当前: csig.json, ~/.workbuddy/connectors/.../tokens/lexiang-ol.txt
+
+结果：所有关键依赖就绪，可正式同步。
+```
+
+如果某项 ✗，脚本会给出 `git clone ...` 一行命令直接修复。这条命令本身就是 fail-fast 的体检——日常 sync 前再跑一次也行，但通常只在首次安装 + 凭证变更时跑。
 
 ## 快速开始
 
@@ -77,6 +105,7 @@ python3 sync.py --url "<站点入口URL>" \
 | `--max-pages` | 单次最大页面数（安全阀） |
 | `--force-delete` | 消失比例 >30% 时仍继续删除同步 |
 | `--no-adopt-orphan` | 关闭 sidebar 隐藏页的兜底归组（默认开启） |
+| `--check-deps` | 仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证）就退出，不要求 `--url` |
 | `--no-waf-sanitize` | 关闭 WAF 内容消毒 |
 
 ## 工作机制

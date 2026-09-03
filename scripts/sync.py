@@ -379,8 +379,10 @@ def apply_sidebar_groups(profile, section_path, manifest, lx, args,
 
 def main():
     ap = argparse.ArgumentParser(description="文档站点 → 乐享同步")
-    ap.add_argument("--url", required=True, help="站点入口 URL")
-    ap.add_argument("--target-space-id", required=True)
+    ap.add_argument("--url", default=None,
+                    help="站点入口 URL（--check-deps 时不需要）")
+    ap.add_argument("--target-space-id", default=None,
+                    help="乐享 space id（--check-deps 时不需要）")
     ap.add_argument("--target-folder-id", default=None,
                     help="目标目录 entry_id（默认知识库根）")
     ap.add_argument("--scope", choices=["subtree", "section", "all"],
@@ -398,7 +400,44 @@ def main():
                     help="仅探测站点输出菜单树 JSON")
     ap.add_argument("--no-adopt-orphan", action="store_true",
                     help="不把 sidebar 隐藏但 menu JSON 存在的页归入相邻 group")
-    args = ap.parse_args()
+    ap.add_argument("--check-deps", action="store_true",
+                    help="仅检查依赖（Python / upload-markdown-to-lexiang / 乐享凭证），不连接站点")
+    # parse_known_args 允许携带透传给子工具的额外参数（如 --check-deps --json）
+    args, extras = ap.parse_known_args()
+
+    # ── 仅依赖检查模式（不要求 url/space） ──────────────────────────────
+    if args.check_deps:
+        here = os.path.dirname(os.path.abspath(__file__))
+        check_deps_py = os.path.join(here, "check_deps.py")
+        if not os.path.isfile(check_deps_py):
+            log("ERROR: 找不到 scripts/check_deps.py；请确认与 sync.py 在同一目录")
+            return 2
+        # 透传所有额外参数（如 --json）给 check_deps.py
+        rc = subprocess.call([sys.executable, check_deps_py] + extras)
+        sys.exit(rc)
+
+    # ── 非 check-deps 模式必填 ──────────────────────────────────────
+    if not args.url or not args.target_space_id:
+        ap.error("--url 与 --target-space-id 必填（除非用 --check-deps）")
+
+    # ── 启动软检查：正式同步（且非 probe-only/dry-run）缺关键依赖立刻失败 ──
+    if not args.probe_only and not args.dry_run:
+        uploader = find_uploader_cli()
+        if not uploader:
+            print(json.dumps({
+                "ok": False,
+                "error": "未找到 upload-markdown-to-lexiang CLI；正式同步依赖该 skill 提供 Markdown 上传能力",
+                "fix": (
+                    "git clone https://github.com/ajaxhe/upload-markdown-to-lexiang.git "
+                    "~/.workbuddy/skills/upload-markdown-to-lexiang"
+                ),
+                "hint": (
+                    "probe-only / dry-run 不需要该依赖；"
+                    "可先 python3 sync.py --check-deps 单独检查；"
+                    "也可设环境变量 LEXIANG_UPLOADER_HOME 指向自定义位置"
+                ),
+            }, ensure_ascii=False))
+            return 2
 
     # ── 探测站点 ──────────────────────────────────────────
     log(f"[1/6] 探测站点: {args.url}")
@@ -877,4 +916,4 @@ def _sync_page(nd, page, manifest, lx, uploader, args, node_parent,
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
